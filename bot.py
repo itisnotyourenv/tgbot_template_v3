@@ -1,7 +1,7 @@
 import asyncio
 import logging
+import pathlib
 
-import betterlogging as bl
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage, DefaultKeyBuilder
@@ -9,6 +9,7 @@ from aiogram.fsm.storage.redis import RedisStorage, DefaultKeyBuilder
 from tgbot.config import load_config, Config
 from tgbot.handlers import routers_list
 from tgbot.middlewares.config import ConfigMiddleware
+from tgbot.misc.logging import LoggingPackagePathFilter
 from tgbot.services import broadcaster
 
 
@@ -37,30 +38,60 @@ def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=Non
         dp.callback_query.outer_middleware(middleware_type)
 
 
-def setup_logging():
+def setup_logging(config: Config):
     """
     Set up logging configuration for the application.
 
-    This method initializes the logging configuration for the application.
-    It sets the log level to INFO and configures a basic colorized log for
-    output. The log format includes the filename, line number, log level,
-    timestamp, logger name, and log message.
+    The function sets up logging for production and development environments.
+    If the environment is development, the function sets up logging to the console with the package path filter.
+    Otherwise, the function sets up logging to the file.
+
+    Args:
+        config (Config): The configuration object.
 
     Returns:
         None
 
     Example usage:
-        setup_logging()
+        setup_logging(config)
     """
-    log_level = logging.INFO
-    bl.basic_colorized_config(level=log_level)
+    logger = logging.getLogger(__name__)
+
+    if config.environment == "dev":
+        # note - didn't find a way to set the filter in BasicConfig, so I used loggerDict
+        package_filter = LoggingPackagePathFilter()
+        loggers_names = [name for name in logging.root.manager.loggerDict] + ["root"]
+        for logger_name in loggers_names:
+            logging.getLogger(logger_name).addFilter(package_filter)
+
+        # setup logging configuration for dev environment with StreamHandler
+        log_format = "%(pathname)s:%(lineno)s [%(name)s]: %(message)s"
+        formatter = logging.Formatter(log_format)
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        handlers = [handler]
+    else:
+        # define logs directory and path to logs file and create logs directory if it does not exist
+        logs_directory = pathlib.Path("logs")
+        logs_path = logs_directory / "logs.txt"
+        pathlib.Path(logs_directory).mkdir(parents=True, exist_ok=True)
+
+        # setup logging configuration for prod environment with FileHandler
+        handler = logging.FileHandler(logs_path, mode="a")
+        log_format = "%(filename)s:%(lineno)d #%(levelname)-8s [%(asctime)s] - %(name)s - %(message)s"
+        formatter = logging.Formatter(log_format)
+        handler.setFormatter(formatter)
+        handlers = [handler]
+        # reduce aiogram logging level
+        logging.getLogger("aiogram").setLevel(logging.WARNING)
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(filename)s:%(lineno)d #%(levelname)-8s [%(asctime)s] - %(name)s - %(message)s",
+        format=log_format,
+        handlers=handlers,
     )
-    logger = logging.getLogger(__name__)
-    logger.info("Starting bot")
+
+    logger.info("Starting bot in %s environment", config.environment)
 
 
 def get_storage(config):
@@ -84,9 +115,8 @@ def get_storage(config):
 
 
 async def main():
-    setup_logging()
-
     config = load_config(".env")
+    setup_logging(config)
     storage = get_storage(config)
 
     bot = Bot(token=config.tg_bot.token, parse_mode="HTML")
